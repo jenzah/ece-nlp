@@ -1,5 +1,7 @@
 import re
 from typing import List, Optional
+import html
+import unicodedata
 
 import numpy as np
 import pandas as pd
@@ -20,7 +22,7 @@ class DataCleaner:
 
     NULL_STRINGS = ['nan', 'none', '']
 
-    def __init__(self, target: str = "genres", verbose: bool = True):
+    def __init__(self, target: str = "fake_news", verbose: bool = True):
         self.target = target
         self.verbose = verbose
 
@@ -123,137 +125,6 @@ class DataCleaner:
             })
         return pd.DataFrame(audit_data)
 
-    def profile_unique_values(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Profiles columns to find categories, numeric ranges, or median list item counts."""
-        profile_results = []
-
-        for col in df.columns:
-            if df[col].nunique(dropna=False) < 2:
-                continue
-
-            series_no_na = df[col].dropna()
-            clean_unique = series_no_na.unique()
-
-            row_data = {
-                'column': col,
-                'type': str(df[col].dtype),
-                'unique_count': len(clean_unique),
-            }
-
-            if pd.api.types.is_numeric_dtype(df[col]):
-                row_data['analysis_type'] = 'Numeric'
-                row_data['detail'] = f"Min: {series_no_na.min()} | Max: {series_no_na.max()}"
-                row_data['example'] = str(series_no_na.iloc[0]) if not series_no_na.empty else "NaN"
-
-            elif col in self.LIST_LIKE_COLUMNS:
-                row_data['analysis_type'] = 'List-like'
-                item_counts = series_no_na.apply(
-                    lambda x: len(str(x).split(',')) if str(x).lower() != 'unset' else 0
-                )
-                if not item_counts.empty:
-                    median_len = int(item_counts.median())
-                    row_data['detail'] = f"Median elements: {median_len} (Max: {int(item_counts.max())})"
-                    median_match = item_counts[item_counts == median_len].index
-                    row_data['example'] = (
-                        f"Typical: {series_no_na.loc[median_match[0]]}" if len(median_match) else "N/A"
-                    )
-                else:
-                    row_data['detail'] = "No valid list items"
-                    row_data['example'] = "N/A"
-
-            else:
-                row_data['analysis_type'] = 'Categorical'
-                row_data['detail'] = "Textual categories"
-                row_data['example'] = str(clean_unique[0]) if len(clean_unique) > 0 else "NaN"
-
-            profile_results.append(row_data)
-
-        return pd.DataFrame(profile_results)
-
-    def find_fuzzy_duplicates(self, df: pd.DataFrame,
-                              threshold: int = 85,
-                              min_length: int = 4) -> pd.DataFrame:
-        """
-        Finds groups of similar strings in textual columns.
-        Ignores list-like columns to avoid noise.
-        """
-        issue_list = []
-        potential_cols = [c for c in self._string_columns(df) if c not in self.LIST_LIKE_COLUMNS]
-
-        for col in potential_cols:
-            unique_values = [
-                str(x) for x in df[col].dropna().unique()
-                if len(str(x)) >= min_length
-            ]
-            if len(unique_values) < 2 or len(unique_values) > 1000:
-                continue
-
-            duplicate_groups = []
-            processed_values = set()
-
-            for i, val in enumerate(unique_values):
-                if val in processed_values:
-                    continue
-                matches = process.extract(
-                    val,
-                    unique_values[i + 1:],
-                    scorer=fuzz.ratio,
-                    score_cutoff=threshold,
-                )
-                if matches:
-                    group = [val] + [match[0] for match in matches]
-                    duplicate_groups.append(sorted(group))
-                    processed_values.update(group)
-
-            if duplicate_groups:
-                issue_list.append({
-                    'column': col,
-                    'found_groups': len(duplicate_groups),
-                    'examples': duplicate_groups[:3],
-                })
-
-        return pd.DataFrame(issue_list)
-
-    def analyse_mutual_information(self, df: pd.DataFrame,
-                                   top_n: int = 20,
-                                   training: bool = False) -> List[str]:
-        """Calculates (and optionally plots) mutual information scores. Returns top feature names."""
-        cols_to_skip = [self.target] + [c for c in self.LIST_LIKE_COLUMNS if c in df.columns]
-        X = df.drop(columns=cols_to_skip)
-        y = df[self.target]
-
-        X_prepared = X.copy()
-        discrete_mask = []
-        for col in X_prepared.columns:
-            if pd.api.types.is_object_dtype(X_prepared[col]) or pd.api.types.is_string_dtype(X_prepared[col]):
-                X_prepared[col] = X_prepared[col].astype('category').cat.codes
-                discrete_mask.append(True)
-            else:  # numeric columns are assumed continuous
-                X_prepared[col] = X_prepared[col].fillna(-999)
-                discrete_mask.append(False)
-
-        y_encoded = LabelEncoder().fit_transform(y)
-
-        mi_scores = mutual_info_classif(
-            X_prepared, y_encoded, discrete_features=discrete_mask, random_state=42
-        )
-        mi_df = (pd.DataFrame({'feature': X.columns, 'mutual_information': mi_scores})
-                 .sort_values('mutual_information', ascending=False))
-
-        top_features = mi_df.head(top_n)['feature'].tolist()
-
-        if not training:
-            self._vprint(f"\n--- Top {top_n} Features (Mutual Information) ---")
-            self._vprint(mi_df.head(top_n).to_string(index=False))
-
-            fig = px.bar(mi_df.head(top_n), x='mutual_information', y='feature', orientation='h',
-                         title=f'Top {top_n} Features by Mutual Information',
-                         labels={'mutual_information': 'Mutual Information Score', 'feature': 'Feature'})
-            fig.update_layout(yaxis={'categoryorder': 'total ascending'})
-            fig.show()
-
-        return top_features
-
     # ------------------------------------------------------------------
     # TRANSFORMS (take a df, return a new df)
     # ------------------------------------------------------------------
@@ -291,26 +162,8 @@ class DataCleaner:
         self._vprint("=" * 80 + "\n")
         return df
 
-    def drop_useless_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Drops identifiers, image paths and redundant fields."""
-        cols_to_drop = [c for c in self.COLUMNS_TO_DROP if c in df.columns]
-        df = df.drop(columns=cols_to_drop)
-        self._vprint(f"✓ Dropped {len(cols_to_drop)} useless columns: {cols_to_drop}")
-        return df
-
-    def drop_empty_target(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Drops rows where the target column is null, empty, or 'nan'."""
-        if self.target not in df.columns:
-            self._vprint(f"⚠️ Warning: '{self.target}' column not found. Skipping drop.")
-            return df.copy()
-
-        empty_mask = self._is_null_like(df[self.target])
-        result = df[~empty_mask].copy()
-        self._vprint(f"✓ Dropped {int(empty_mask.sum())} rows with empty '{self.target}'")
-        return result
-
     def standardise_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Lowercases, strips whitespace / trailing semicolons, and unifies NaNs in string columns."""
+        """Lowercases, strips whitespace / trailing semicolons, collapses inner whitespace and unifies NaNs."""
         df = df.copy()
         string_cols = self._string_columns(df)
 
@@ -320,143 +173,36 @@ class DataCleaner:
                        .str.strip()
                        .str.lower()
                        .str.replace(r';\s*$', '', regex=True)  # remove trailing semicolons
+                       .str.replace(r'\s+', ' ', regex=True)   # collapse tabs, newlines, repeated spaces
                        .str.strip()
                        .replace(self.NULL_STRINGS, np.nan))
 
-        self._vprint(f"✓ Standardised {len(string_cols)} columns (lowercase, stripped, null-unified)")
+        self._vprint(f"✓ Standardised {len(string_cols)} columns (lowercase, stripped, whitespace collapsed, null-unified)")
         return df
 
-    def drop_highly_empty_columns(self, df: pd.DataFrame,
-                                  threshold: float = 0.8,
-                                  empty_values: Optional[List[str]] = None) -> pd.DataFrame:
-        """
-        Drops columns where more than `threshold` of values are empty/null.
+    def normalise_text(self, text, strip_accents: bool = True, keep_apostrophes: bool = False):
+        """Removes HTML, escape sequences and punctuation from a single string."""
+        if not isinstance(text, str):
+            return text
 
-        Args:
-            threshold: Fraction of empty values above which a column is dropped
-            empty_values: Additional string values to treat as empty (e.g. ['unset'])
-        """
-        extra_empty = [v.lower() for v in (empty_values or [])]
-        total_rows = len(df)
-        dropped_cols = []
+        text = re.sub(r'<[^>]+>', ' ', text)           # HTML tags: <br>, <p class="x">, </a>
+        text = re.sub(r'&#?\w+;', ' ', text)           # HTML entities: &amp;, &nbsp;, &#39;
+        text = re.sub(r'\\\w+', ' ', text)             # escape sequences: \u2013, \xa0, \n
 
-        for col in df.columns:
-            empty_mask = df[col].isna() | df[col].astype(str).str.lower().isin(extra_empty)
-            empty_count = int(empty_mask.sum())
-            empty_pct = empty_count / total_rows if total_rows else 0
+        if strip_accents:
+            text = unicodedata.normalize('NFKD', text)
+            text = ''.join(c for c in text if not unicodedata.combining(c))
 
-            if empty_pct > threshold:
-                dropped_cols.append(col)
-                self._vprint(f"-> Dropping '{col}': {empty_pct:.1%} empty ({empty_count}/{total_rows})")
+        if keep_apostrophes:
+            text = re.sub(r"[^\w\s'’]", ' ', text)
+            text = re.sub(r"(?<!\w)['’]|['’](?!\w)", ' ', text)  # keep ' only inside words (don't)
+        else:
+            text = re.sub(r"['’]", '', text)                      # don't -> dont (no split)
+            text = re.sub(r'[^\w\s]', ' ', text)
 
-        self._vprint(f"\nDropped {len(dropped_cols)} highly empty columns in total.")
-        return df.drop(columns=dropped_cols)
-
-    def standardise_numeric(self, df: pd.DataFrame,
-                            columns: Optional[List[str]] = None) -> pd.DataFrame:
-        """Converts columns to numeric; dirty strings and -999 sentinels become NaN."""
-        df = df.copy()
-        cols_to_fix = [c for c in (columns or self.NUMERIC_COLS) if c in df.columns]
-
-        for col in cols_to_fix:
-            self._vprint(f"-> Converting to numeric: '{col}'")
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-            df.loc[df[col] == -999, col] = np.nan
-
-        self._vprint(f"✓ Standardised {len(cols_to_fix)} numeric columns")
-        return df
-
-    def standardise_boolean(self, df: pd.DataFrame,
-                            columns: Optional[List[str]] = None) -> pd.DataFrame:
-        """Converts columns to bool. Unrecognised / null-like values become False."""
-        df = df.copy()
-        cols_to_fix = [c for c in (columns or self.BOOLEAN_COLS) if c in df.columns]
-
-        bool_map = {
-            'true': True, '1': True, '1.0': True, 't': True, 'yes': True,
-            'false': False, '0': False, '0.0': False, 'f': False, 'no': False,
-        }
-
-        for col in cols_to_fix:
-            self._vprint(f"-> Converting to boolean: '{col}'")
-            df[col] = (df[col]
-                       .astype(str)
-                       .str.strip()
-                       .str.lower()
-                       .map(bool_map)
-                       .eq(True))  # NaN (unmapped) -> False
-
-        self._vprint(f"✓ Standardised {len(cols_to_fix)} boolean columns")
-        return df
-
-    @staticmethod
-    def _normalise_ordered_list(s, delimiter_pattern: str = r'[\+/\|;]') -> str:
-        """Splits on delimiters, deduplicates while preserving order, rejoins with ', '."""
-        if not isinstance(s, str) or not s.strip() or s.strip().lower() == 'nan':
-            return 'unset'
-        items = [item.strip() for item in re.split(delimiter_pattern, s) if item.strip()]
-        result = ", ".join(dict.fromkeys(items))
-        return result if result else 'unset'
-
-    def convert_strings_to_lists(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Normalises list-like columns (e.g. 'cast', 'directors') without sorting,
-        so the original order is kept (lead actor stays first).
-        """
-        df = df.copy()
-        cols = [c for c in self.LIST_LIKE_COLUMNS if c in df.columns]
-
-        for col in cols:
-            self._vprint(f"-> Normalising order-sensitive list: '{col}'")
-            df[col] = df[col].apply(self._normalise_ordered_list)
-
-        self._vprint(f"✓ Normalised {len(cols)} list columns (order preserved)")
-        return df
-
-    def expand_list_columns(self, df: pd.DataFrame,
-                            columns: Optional[List[str]] = None,
-                            n_items: int = 3) -> pd.DataFrame:
-        """
-        Splits list-like columns into n_items separate columns (e.g. cast_1, cast_2, cast_3)
-        and drops the original column. The target is never expanded.
-        """
-        df = df.copy()
-        candidates = columns or self.LIST_LIKE_COLUMNS
-        cols_to_expand = [c for c in candidates if c != self.target and c in df.columns]
-
-        for col in cols_to_expand:
-            self._vprint(f"-> Expanding list-like column: '{col}'")
-            expanded = df[col].apply(
-                lambda x: str(x).split(', ') if str(x).lower() != 'unset' else []
-            )
-            for i in range(1, n_items + 1):
-                df[f"{col}_{i}"] = expanded.apply(
-                    lambda x, i=i: x[i - 1].strip() if len(x) >= i else np.nan
-                )
-            df = df.drop(columns=[col])
-
-        self._vprint(f"✓ Expanded {len(cols_to_expand)} columns into {n_items} features each")
-        return df
-
-    def truncate_target(self, df: pd.DataFrame, max_items: int = 3) -> pd.DataFrame:
-        """
-        Keeps at most max_items entries in the target column
-        (splits on commas and semicolons, rejoins with ', ').
-        """
-        if self.target not in df.columns:
-            self._vprint(f"⚠️ Warning: '{self.target}' column not found. Skipping truncation.")
-            return df.copy()
-
-        def truncate_one(val):
-            if pd.isna(val):
-                return val
-            items = [g.strip() for g in re.split(r'[,;]', str(val)) if g.strip()]
-            return ', '.join(items[:max_items])
-
-        df = df.copy()
-        df[self.target] = df[self.target].apply(truncate_one)
-        self._vprint(f"✓ '{self.target}' truncated to a maximum of {max_items} per row")
-        return df
+        text = text.replace('_', ' ')                  # \w keeps underscores, drop them too
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text if text else np.nan
 
     # ------------------------------------------------------------------
     # CONVENIENCE PIPELINE
@@ -466,10 +212,6 @@ class DataCleaner:
         """Runs the standard cleaning sequence and returns the cleaned DataFrame."""
         return (df
                 .pipe(self.standardise_column_names)
-                .pipe(self.drop_useless_columns)
                 .pipe(self.standardise_data)
-                .pipe(self.drop_empty_target)
-                .pipe(self.truncate_target)
-                .pipe(self.standardise_numeric)
-                .pipe(self.standardise_boolean)
-                .pipe(self.convert_strings_to_lists))
+                .pipe(self.normalise_text)
+                )
