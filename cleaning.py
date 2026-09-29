@@ -8,6 +8,11 @@ import pandas as pd
 from sklearn.feature_selection import mutual_info_classif
 from sklearn.preprocessing import LabelEncoder
 
+#Pour fonction remove_numbers
+from nltk.corpus import stopwords
+import nltk
+nltk.download("stopwords")
+#pip install nltk
 
 class DataCleaner:
     """
@@ -473,3 +478,75 @@ class DataCleaner:
                 .pipe(self.standardise_numeric)
                 .pipe(self.standardise_boolean)
                 .pipe(self.convert_strings_to_lists))
+
+
+    def remove_numbers(self, df: pd.DataFrame,
+                    columns: Optional[List[str]] = None) -> pd.DataFrame:
+        """
+        Supprime les nombres des colonnes textuelles.
+
+        Args:
+            df: DataFrame à nettoyer.
+            columns: Colonnes sur lesquelles appliquer la suppression.
+                    Par défaut : title et text.
+
+        Returns:
+            Nouveau DataFrame sans les nombres.
+        """
+
+        df = df.copy()
+
+        columns = columns or ["title", "text"]
+
+        for col in columns:
+            if col in df.columns:
+                df[col] = (
+                    df[col]
+                    .fillna("")
+                    .astype(str)
+                    .str.replace(r"\d+", " ", regex=True)
+                    .str.replace(r"\s+", " ", regex=True)
+                    .str.strip()
+                )
+
+        self._vprint(f"✓ Numbers removed from: {columns}")
+
+        return df
+
+
+    def remove_stopwords(self, df: pd.DataFrame,
+                        columns: Optional[List[str]] = None,
+                        language: str = "english") -> pd.DataFrame:
+        """
+        Supprime les mots vides (stopwords) des colonnes textuelles.
+
+        Args:
+            df: DataFrame à nettoyer.
+            columns: Colonnes sur lesquelles appliquer la suppression.
+            language: Langue des stopwords ('english', 'french', etc.).
+
+        Returns:
+            Nouveau DataFrame sans les stopwords.
+        """
+
+        df = df.copy()
+
+        columns = columns or ["title", "text"]
+
+        stop_words = set(stopwords.words(language))
+
+        for col in columns:
+            if col in df.columns:
+                df[col] = df[col].apply(
+                    lambda text: " ".join(
+                        word for word in str(text).split()
+                        if word.lower() not in stop_words
+                    )
+                )
+
+        self._vprint(
+            f"✓ Stopwords removed from: {columns} "
+            f"(language: {language})"
+        )
+
+        return df
