@@ -315,3 +315,26 @@ class DataCleaner:
         self._vprint(f"✓ Duplicate words removed from: {columns}")
 
         return df
+
+    def remove_duplicate_words(self, df: pd.DataFrame,
+                            columns: Optional[List[str]] = None) -> pd.DataFrame:
+        """
+        Supprime les mots dupliqués dans les colonnes textuelles.
+        Une seule occurrence de chaque mot est conservée.
+        """
+
+        df = df.copy()
+
+        columns = columns or ["title", "text"]
+
+        for col in columns:
+            if col in df.columns:
+                df[col] = df[col].apply(
+                    lambda text: " ".join(
+                        dict.fromkeys(str(text).split())
+                    )
+                )
+
+        self._vprint(f"✓ Duplicate words removed from: {columns}")
+
+        return df
