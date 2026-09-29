@@ -3,8 +3,8 @@ from typing import List, Optional
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
-from rapidfuzz import process, fuzz
+#mport plotly.express as px
+#rom rapidfuzz import process, fuzz
 from sklearn.feature_selection import mutual_info_classif
 from sklearn.preprocessing import LabelEncoder
 
@@ -39,6 +39,7 @@ class DataCleaner:
         clean_s = series.astype(str).str.strip().str.lower()
         return series.isna() | (clean_s == 'nan') | (clean_s == '')
 
+    @staticmethod
     def merge_fake_true(fake: pd.DataFrame,
                         true: pd.DataFrame,
                         label_col: str = "fake_news",
